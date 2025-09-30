@@ -35,7 +35,6 @@ extern DMA_HandleTypeDef hdma_usart2_tx;
   * @brief UART handle
   */
 extern UART_HandleTypeDef huart2;
-extern UART_HandleTypeDef huart1;
 
 /**
   * @brief buffer to receive 1 character

@@ -1,4 +1,3 @@
-
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
@@ -21,23 +20,17 @@
 #include "main.h"
 #include "app_subghz_phy.h"
 #include "gpio.h"
-#include "stm32wlxx_hal_tim.h"
+#include "subghz_phy_app.h"
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "platform.h"
-#include "sys_app.h"
-#include "subghz_phy_app.h"
-#include "radio.h"
-#include <stdio.h>
-#include <ctype.h> // ctype 헤더 파일 추가
+#include "uart.c"
 #include "extern.h"
-#include "utilities_def.h"
-
+#include "user_define.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -46,33 +39,39 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
+
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim2;
 UART_HandleTypeDef huart1;
 /* USER CODE BEGIN PV */
-unsigned int scan = 0, reset_flag = 0, Tx_Success = 0, Rx_Success = 0, Rx_Fail = 0, Tx_Ready = 0, Tx_Fail = 0, Tx_Stop = 0, Rx_Stop = 0, error_msg = 0;
-uint8_t tx_EN = 0,display_PC = 0;
-uint8_t Rx_buf[20];
-uint8_t ok_Buffer[5] = {"OK"};
-uint8_t go_Buffer[5] = {"\0"};
+unsigned int scan = 0;
+uint8_t Rx_buf[255] = {0x11,0x04};
+uint8_t tx_EN = 0;
+unsigned char MD_tx_EN = 0;
 
-uint8_t Tx_Ready_Buffer[10] = {"Tx Ready\r\n"};
-uint8_t Tx_Success_Buffer[12] = {"Tx Success\r\n"};
-uint8_t Tx_Fail_Buffer[9] = {"Tx Fail\r\n"};
-uint8_t Rx_Success_Buffer[12] = {"Rx Success\r\n"};
-uint8_t Rx_Fail_Buffer[9] = {"Rx Fail\r\n"};
-uint8_t Tx_Stop_Buffer[9] = {"Tx Stop\r\n"};
-uint8_t Rx_Stop_Buffer[9] = {"Rx Stop\r\n"};
-uint8_t error_msg_Buffer[79] = {"Communication failed\r\n"};
+unsigned char RF_start_flag = 0;
 
+byte CheckSum_EN = 0;
+byte Rx1_Checksum_H = 0;
+byte Rx1_Checksum_L = 0;
+word test_crc1 = 0, test_crc2 = 0;
 word LoRa_Master_CRC16 = 0,MD_CRC16 = 0,LoRa_Master_CRC16_Data = 0,MD_CRC16_Data = 0;
+byte Rx2_RS_L = 0, Rx2_RS_H = 0;
+word Rx2_RS = 0;
+int LoRa_send_MD_Flag = 0;
+extern word CheckSum_data;
+extern byte CheckSum_ing;
+extern byte Rcv1_ok;
 
-extern uint8_t BufferRx[255], BufferTx[255],Tx1_buf[255],Tx1_send_number,Tx1_index;
-extern uint8_t Rx1_buf[255];
-extern unsigned char Kang_TX_buf[10];
-extern unsigned int num_cnt,master_start,send_tx1_cnt;
+extern uint8_t BufferRx[255];
+extern int16_t kang_rssi;
+extern uint8_t Slave_BackupTxBuffer[255];
+extern uint8_t Slave_BackupRxBuffer[255];
+extern word CRC16(byte *Data, byte Len);
+extern byte RS485_dead_time;	//1msec down counter
+extern byte LoRa_test_buf[255];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -80,9 +79,7 @@ void SystemClock_Config(void);
 static void MX_TIM2_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-void ENQ_Array_Sort(unsigned char arr[], int n);
-bool isDuplicate(unsigned char arr[], int size, unsigned char value);
-extern void LoRa_Tx(uint8_t lora_tx_num);
+extern void Slave_LoRa_Tx(byte lora_tx_num);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -124,20 +121,12 @@ int main(void)
   MX_TIM2_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-
-  /*## Start the TIM Base generation in interrupt mode ####################*/
-  /* Start Channel1 */
- // if(HAL_TIM_Base_Start_IT(&htim2) != HAL_OK)
-  //{
-    /* Starting Error */
- //   Error_Handler();
-  //}
+  HAL_TIM_Base_Start_IT(&htim2);	//TIM2 interrupt start
   
- 
+  RF_start_flag = 1;
+  
   USART1->CR1 |= USART_CR1_RXNEIE_RXFNEIE; 	// USART1's RXE Interrupt Enable	
   //USART1->CR1 &= ~USART_CR1_TCIE;			// USART1's TXE Interrupt Disable
-  
-  HAL_TIM_Base_Start_IT(&htim2);	//TIM2 interrupt start
   
   /* USER CODE END 2 */
 
@@ -146,64 +135,41 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	
+
 	scan++;
 	
-    MX_SubGHz_Phy_Process();	//TX(송신)을 위해 반드시 필요함.
+    MX_SubGHz_Phy_Process();
 	
-	/*static unsigned int tx_test_flag = 0;
-	if(tx_test_flag)
-	{
-	    tx_test_flag = 0;
-		UART1_wr_exe();
-	}*/
-	  
+	Rx2_RS_L =  ((kang_rssi < 0) ? -kang_rssi : kang_rssi) & 0xFF; // Slave 로라의 송 수신 감도( LoW )
+	Rx2_RS_H =  (((kang_rssi < 0) ? -kang_rssi : kang_rssi) >> 8); // Slave 로라의  송 수신 감도( High )
+	
+	Rx2_RS = (Rx2_RS_H<<8) | Rx2_RS_L;	
+	
 	if(wireres_receive)
 	{
-	  	wireres_receive = 0;
-		
-		if(BufferRx[1] == 0x04)// 읽기 함수
-		{
-			 Rcv2_ok = 0x04;
-		}
-	 	if(BufferRx[1] == 0x10)// 쓰기 함수
-		{
-			 Rcv2_ok = 0x10;
-		}
-		if(BufferRx[1] == 0x90)// 예외 응답 함수( 모터 드라이버로 데이터를 쓰지 못할때 반환 처리를 받아와 PC로 전송 )
-		{
-		   	 Rcv2_ok = 0x90;
-		}
-	}
-	
-	LoRa_Data_exe();
-	
-	/*if(tx_EN)
-	{
-	  tx_EN = 0;
-	  
-	  send_tx1_cnt = 0;
-	  Tx1_send_number = 0;
-	  Tx1_index = 0;
-	  
-	  for(int null_search_flag = 0; null_search_flag <= sizeof(Tx1_buf); null_search_flag++)
-	  {
-		  if(Tx1_buf[null_search_flag] == '\0')
+	    wireres_receive = 0;
+
+	    Rx1_data = Slave_BackupRxBuffer[0];
+	    if(Rx1_data == ENQ)// 0번 인덱스 = Master LoRa로 부터 받은 데이터의 첫번쨰 인덱스 즉,국번이 같다면 Master LoRa로 부터 받은 데이터를 모터 드라이버로 보낸다.
+	    {
+		  Rx1_data = Slave_BackupRxBuffer[1];
+		  if(Rx1_data == 0x04) // 읽기 요청 함수
 		  {
-			send_tx1_cnt++;
+			Slave_BackupRxBuffer[8] =  Rx2_RS_L; // Slave 로라의 송 수신 감도( LoW )
+			Slave_BackupRxBuffer[9] =  Rx2_RS_H; // Slave 로라의  송 수신 감도( High )
+			Slave_LoRa_Tx(10); // 모터 드라이버로 데이터를 읽기 요청함 , 모터 드라이버 보드로 데이터를 전송하고 모터 드라이버로 부터 데이터를 받기까지의 시간 : 55ms
+			GREEN_LED_OFF; /*LED_Green_OFF */
 		  }
-	  }
-		
-	  Tx1_send_number = sizeof(Tx1_buf) - send_tx1_cnt;
-	  
-	  //LoRa_Tx(5);
-	  
-	  for(int rx_buffer_reset = 0; rx_buffer_reset < sizeof(Rx1_buf); rx_buffer_reset++)
-	  {
-	     Rx1_buf[rx_buffer_reset] = '\0';
-	  }
-	}*/
-	
+		  if(Rx1_data == 0x10) // 쓰기 요청 함수
+		  {
+			  Data_Cnt = Slave_BackupRxBuffer[5]*2 + 9; // 모터 드라이버로 데이터를 전송할 갯수 계산
+			  Slave_BackupRxBuffer[Data_Cnt+1] = Rx2_RS_L; // Slave 로라의 송 수신 감도( LoW )
+			  Slave_BackupRxBuffer[Data_Cnt+2] = Rx2_RS_H; // Slave 로라의  송 수신 감도( High )
+			  Slave_LoRa_Tx(Data_Cnt+2); // 모터 드라이버로 데이터를 쓰기 요청함 , 모터 드라이버 보드로 데이터를 전송하고 모터 드라이버로 부터 데이터를 받기까지의 시간 : 48ms(28byte 데이터 쓸때)
+			  GREEN_LED_OFF; /*LED_Green_OFF */
+		  }
+	    }
+	}
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -302,7 +268,6 @@ static void MX_TIM2_Init(void)
 
 }
 
-
 /**
   * @brief USART1 Initialization Function
   * @param None
@@ -350,6 +315,8 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE END USART1_Init 2 */
 
 }
+
+
 
 
 /* USER CODE BEGIN 4 */

@@ -20,24 +20,21 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32wlxx_it.h"
-#include "stm32wlxx_hal_tim.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "stdio.h"
+#include "stdbool.h"
+#include "subghz_phy_app.h"
+#include "user_define.h"
 #include "extern.h"
-#include <stdbool.h>
 #include "platform.h"
 #include "sys_app.h"
-#include "subghz_phy_app.h"
 #include "radio.h"
-#include <stdio.h>
-#include <ctype.h> // ctype 헤더 파일 추가
-#include "utilities_def.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN TD */
-
+typedef unsigned char byte;
+typedef unsigned short word;
 /* USER CODE END TD */
 
 /* Private define ------------------------------------------------------------*/
@@ -57,7 +54,7 @@
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
-void LoRa_Tx(uint8_t lora_tx_num);
+void Slave_LoRa_Tx(byte lora_tx_num);
 void LoRa_Data_exe(void);
 /* USER CODE END PFP */
 
@@ -73,20 +70,38 @@ extern DMA_HandleTypeDef hdma_usart2_tx;
 extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart1;
 extern TIM_HandleTypeDef htim2;
-extern unsigned char Kang_TX_buf[10];
-extern unsigned char Log_tx_buf[10];
-extern uint8_t tx_EN,display_PC;
-extern uint8_t ok_Buffer[5];
-extern int Rx_EEROR_CNT;
-
-unsigned int Tx_Flag_cnt = 0,T3000ms_cnt = 0,t1000ms_cnt = 0,num_cnt = 0,master_start = 0,send_tx1_cnt=0, T1000ms_cnt = 0,error_flag = 0,Tx_end_recieve_EN = 0,rx_end_num = 0,test_again_send_en = 0,test_tx_again_send_flag = 0;
-int Timer_cnt = 0, T100ms_cnt = 0;
-unsigned int Dial_Num = 0,send_data_cnt = 0; // PC에 출력되는 국번
-		
-byte rx_end_delay_num = 0;
 
 /* USER CODE BEGIN EV */
+extern unsigned char RF_start_flag;
+extern unsigned char Station_No;
+extern unsigned char Tx_EN;
+extern bool isMaster;
+extern unsigned char tx_EN;
+extern int Tx_EEROR_CNT;
+extern byte Rcv1_ok;
+int Timer_cnt = 0, T100ms_cnt = 0;
+byte RS485_dead_time=0;	//1msec down counter
+byte LoRa_test_buf[255] = {"Slave_LoRa_Tx_Success"};
+byte tx_delay_num = 0, LoRa_Equipment_Num_Fg = 0;
+word LoRa_CRC_data = 0, LoRa_temp = 0;
+unsigned int md_rx_time = 0, rx_time_cnt = 0,Tx_send_EN = 0,Tx_send_flag = 0;
 
+extern byte Rx1_data, Rx_stop_flag,Rx_Data_Flag;
+extern word Rx1_index;
+extern byte test_index, test_rxbuf[256];
+extern byte CheckSum_ing;
+extern byte Rx1_step, Rx1_next_data_no;
+extern word Rx1_data_sum;
+extern word Error1_cnt;
+extern uint8_t Slave_BackupTxBuffer[255];
+extern uint8_t Slave_BackupRxBuffer[255];
+extern byte CheckSum_EN;
+extern byte Rx1_Checksum_H;
+extern byte Rx1_Checksum_L;
+extern uint8_t BufferRx[255];
+extern unsigned char MD_tx_EN;
+
+extern word CRC16(byte *Data, word Len);
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -257,10 +272,27 @@ void DMA1_Channel5_IRQHandler(void)
 /**
   * @brief This function handles USART2 Interrupt.
   */
+
+byte Rx2_index = 0, Rx2_next_data_no = 0, Rcv2_cnt = 0;
+word LoRa_CheckSum_data;
+word Error2_cnt = 0;
+byte Rx2_step = 0;
+
+byte Rx2_Checksum_H = 0, Rx2_Checksum_L = 0;
+byte LoRa_CheckSum_ing = 0;
+byte LoRa_CheckSum_EN = 0;
+
+byte LoRa_Rcv_ok = 0;
+
+word LoRa_test_crc1 = 0, LoRa_test_crc2 = 0;
+byte LoRa_Tx_buf[100] ={0x01, 0x04, 0x02, 0x00, 0x0A, 0xF8, 0xF4};
+byte LoRa_Tx_index=0;
+byte LoRa_Tx_send_number=0;
+byte Tx2_index=0, Tx2_send_number = 100;
+
 void USART2_IRQHandler(void)
 {
   /* USER CODE BEGIN USART2_IRQn 0 */
-	
   /* USER CODE END USART2_IRQn 0 */
   HAL_UART_IRQHandler(&huart2);
   /* USER CODE BEGIN USART2_IRQn 1 */
@@ -268,15 +300,11 @@ void USART2_IRQHandler(void)
   /* USER CODE END USART2_IRQn 1 */
 }
 
-/**
-  * @brief This function handles USART1 Interrupt.
-  */
-
-uint8_t Tx1_buf[255] = "";
+uint8_t Tx1_buf[20] = "";
 uint8_t Tx1_index = 0, Tx1_send_number = 0;
 uint8_t Rx1_buf[255];
-uint8_t rx1_data;
-uint8_t Rx1_index = 0, Rcv1_cnt = 0;
+uint8_t rx1_data,rx1_index;
+uint8_t Rcv1_cnt = 0,Tx1_cnt=0;
 uint16_t Error_cnt = 0, USART1_int_cnt = 0;
 
 uint32_t ISR_data=0;
@@ -285,11 +313,14 @@ uint32_t CR3_data=0;
 uint8_t error_buf[260] = {0};
 
 uint8_t Buf_byte_size = 0, Radio_Tx_EN = 0;
-byte Rx1_step=0,Rx1_next_data_no = 0,LoRa_Rx_ing = 0;
+word CRC_data = 0;
+word w_temp = 0;
+byte Rcv2_ok = 0, RS232_dead_time = 0;
+byte Data_Cnt = 0; // 모터 드라이버에 보낼 데이터 갯수 
 void USART1_IRQHandler(void)
 {
   /* USER CODE BEGIN USART2_IRQn 0 */
-	
+		  
     uint32_t error_flags;
 	USART1_int_cnt++;
 	
@@ -311,7 +342,7 @@ void USART1_IRQHandler(void)
 				//error_buf[error_index++] = 'P';
 			}
 
-			/* UART frame error interrupt occurred --------------------------------------*/
+			/* UART frame error interrupt occurred 98--------------------------------------*/
 			if(((ISR_data & USART_ISR_FE) != RESET) && ((CR3_data & USART_CR3_EIE) != RESET))
 			{
 				USART1->ICR = UART_CLEAR_FEF;	
@@ -339,120 +370,167 @@ void USART1_IRQHandler(void)
 	} // End if some error occurs
 	else
 	{
-		if((USART1->CR1 & USART_CR1_RXNEIE_RXFNEIE) && (USART1-> ISR & USART_ISR_RXNE_RXFNE) && Tx_go_cnt == 0)	//수신버퍼가 채워졌을 때
+		if((USART1->CR1 & USART_CR1_RXNEIE_RXFNEIE) && (USART1-> ISR & USART_ISR_RXNE_RXFNE))	//수신버퍼가 채워졌을 때
 		{
+			md_rx_time = 1;
+		  
 			Rcv1_cnt++;
 			
 			rx1_data = USART1->RDR;		//수신값 저장
-		
+			
+			test_rxbuf[rx1_index++] = rx1_data;
+			
 			USART1->ISR = USART_ISR_RXNE_RXFNE;	// USART1's USART_ISR_RXNE_RXFNE flag clear(bit5)
-			USART1->ISR &= ~USART_ISR_RXNE_RXFNE;	// USART1's USART_ISR_RXNE_RXFNE flag clear(bit5)
+			USART1->ISR &= ~USART_ISR_RXNE_RXFNE;	// USART1's USART_ISR_RXNE_RXFNE flag clear(bit5)	
+			
+			  switch(Rx2_step)
+			  {
+					case 0 :
+					if(rx1_data == ENQ)// 0번 인덱스 = 국번이 같을때
+					{
+					  Slave_BackupTxBuffer[0] = rx1_data;
+					  Rx2_step = 1;
+					  Rx2_index = 1;
+					}
+					else if(rx1_data != ENQ && LoRa_Equipment_Num_Fg == 0) // Slave LoRa의 국번을 정하는 Command( 모터드라이버 전원 On시 최초 딱 한번만 장비번호를 불러옴 )
+					{
+					  ENQ = rx1_data;
+					  
+					  Rx2_step = 0;
+					  Rx2_index = 0;
+					  LoRa_Equipment_Num_Fg = 1;
+					}
+					else
+					{
+					  Rx2_step = 0;
+					  Rx2_index = 0;
+					}
+					
+					break;
+					
+				   case 1: // Function Code
+					if((rx1_data == 0x04 || rx1_data == 0x10 || rx1_data == 0x90 || rx1_data == 0x07))// function 0x04 : Read Request // function 0x90 : Write Request - The Function Code 1 
+					{										  					  					 // function 0x10 : Write Request // function 0x07 : Equipment_Num 장비 번호를 바꾸는 함수
+					  Slave_BackupTxBuffer[Rx2_index++] = rx1_data;
+					  Rx2_step++;
+					}
+					else
+					{
+					  Rx2_step = 0;
+					  Rx2_index = 0;
+					}
+					
+					break;
+					
+				   case 2: //  읽기 요청한 레지스터의 수
+					Slave_BackupTxBuffer[Rx2_index++] = rx1_data;
+					if(Slave_BackupTxBuffer[1] == 0x04) // Master에서 읽기 요청한 데이터 수
+					{
+					  Rx2_step = 10;
+					  Rx2_next_data_no = Slave_BackupTxBuffer[2];
+					}
+					else if(Slave_BackupTxBuffer[1] == 0x10)
+					{
+					  Rx2_step++;
+					}
+					else if(Slave_BackupTxBuffer[1] == 0x90)
+					{
+					  Rx2_step = 6;
+					}
+					else if(Slave_BackupTxBuffer[1] == 0x07)
+					{
+					  Rx2_step = 6;
+					}
+					break;
+					
+				   case 3: // Data Address[Low]
+					Slave_BackupTxBuffer[Rx2_index++] = rx1_data;
+					if(Slave_BackupTxBuffer[1] == 0x10)
+					{
+					  Rx2_step++;
+					}
+					
+					break;
 
-			switch(Rx1_step) 
-			{
-			 case 0:
-			  Rx1_buf[Rx1_index++] = rx1_data;
-			  Rx1_step++;
-			  break;
-			  
-			 case 1:
-			  if((rx1_data == 0x04 || rx1_data == 0x10)) //function 0x04: Read Request 
-			  {											 //function 0x10: Write Request
-				GREEN_LED_ON; /*LED_Green_ON */
-				Rx1_buf[Rx1_index++] = rx1_data;
-				Rx1_step++;
-			  }
-			  break;
-			  
-			 case 2: //Waiting Address (High Address byte)
-			  Rx1_buf[Rx1_index++] = rx1_data;
-			  Rx1_step++;
-			  break;
-			  
-			 case 3: //Waiting Address  (Low Address byte)
-			  if(rx1_data == 0xEE)
-			  {						
-				  Rx1_step = 0;     //Waiting for  국번
-				  Rx1_index = 0;
-			  }
-			  else                                                    
-			  {
-				  Rx1_buf[Rx1_index++] = rx1_data;
-				  Rx1_step++;
-			  }
-			  break;
-			  
-			 case 4: //Waiting 길이 (High Length byte)
-			  Rx1_buf[Rx1_index++] = rx1_data;
-			  Rx1_step++;
-			  break;
-			  
-			 case 5: //Waiting 길이 (Low Length byte)
-			  Rx1_buf[Rx1_index++] = rx1_data;
-			  if(Rx1_buf[1] == 0x04)
-			  {
-				Rx1_step = 7;
-			  }
-			  else if(Rx1_buf[1] == 0x10)
-			  {
-				Rx1_step++;
-			  }
-			  break;
-			  
-			 case 6: //쓰기 요청할 데이터 수 (The number of data bytes)
-			  Rx1_buf[Rx1_index++] = rx1_data;
-			  if(Rx1_buf[1] == 0x10)
-			  {
-				Rx1_step = 10;
-				Rx1_next_data_no = Rx1_buf[5]*2;
-			  }
-			  else
-			  {
-				  Rx1_step++;		
-				  Rx1_next_data_no = 0;
-			  }
-			  break;
-			  
-			 case 7: //Waiting for CRC16 (Low byte)	
-			  Rx1_buf[Rx1_index++] = rx1_data;
-			  Rx1_step++;
-			  break;
-			  
-			 case 8: //Waiting for CRC16 (High byte)	
-			  Rx1_buf[Rx1_index] = rx1_data;
-			  Rx1_index = 0;
-			  Rx1_step = 0;
-			  memcpy(BufferTx, Rx1_buf, sizeof(Rx1_buf));	//LoRa_TX_buf의 데이터를 BufferTx에 복사
-			  isMaster = true; // LoRa_Slave를 TX모드로 변환
-			  break;
-			  
-			 default :
-			  Rx1_index = 0;
-			  Rx1_step = 0;
-			  break;
-			  
-			 case 10: //Write data 수신
-			  Rx1_buf[Rx1_index++] = rx1_data;
-			  if(Rx1_next_data_no <= 1)
-			  {
-				Rx1_step = 7; // CRC16_Low 수신
-			  }
-			  else
-			  {
-				Rx1_next_data_no--;
-			  }
-			  break;
-			}
+				   case 4: // Quantity of input registers[High]
+					Slave_BackupTxBuffer[Rx2_index++] = rx1_data;
+					if(Slave_BackupTxBuffer[1] == 0x10)
+					{
+					  Rx2_step++;
+					}
+					
+					break;
+					
+				   case 5: // Quantity of input registers[Low]
+					Slave_BackupTxBuffer[Rx2_index++] = rx1_data;
+					if(Slave_BackupTxBuffer[1] == 0x10)
+					{
+						Rx2_step++; 
+					}
+					
+					break;
+					
+				   case 6: // CRC16 Code [Low] 
+					Slave_BackupTxBuffer[Rx2_index++] = rx1_data;
+					Rx2_step++;
+					
+					break;
+					
+				   case 7: // CRC16 Code [High]
+					Slave_BackupTxBuffer[Rx2_index] = rx1_data;
+					
+					CRC_data = CRC16(Slave_BackupTxBuffer,Rx2_index - 1);
+					
+					// CRC_High          CRC Low
+					w_temp = (rx1_data<<8) | Slave_BackupTxBuffer[Rx2_index-1];
+					
+					if((CRC_data == w_temp) && Slave_BackupTxBuffer[1] != 0x07)
+					{
+					  GREEN_LED_ON; /*LED_Green_ON */
+					  memcpy(TX_BufferRx, Slave_BackupTxBuffer, sizeof(Slave_BackupTxBuffer));		//LoRa_TX_buff의 데이터를 TX_BufferRx에 복사
+					}
+					else if((CRC_data == w_temp) && Slave_BackupTxBuffer[1] == 0x07)
+					{
+					  ENQ = Slave_BackupTxBuffer[2]; // 0x07 장비 번호를 변경하는 명령어의 CRC16 값이 같다면 국번을 장비 번호로 변경
+					}
+				
+					Rx2_index = 0;
+					Rx2_step = 0;
+					md_rx_time = 0;
+					
+					if(Slave_BackupTxBuffer[1] != 0x07)
+					{
+						isMaster = true; // LoRa_Slave를 TX모드로 변환
+					}
+					
+					break;
+					
+				   default:
+					Rx2_step = 0;
+					Rx2_index = 0;
+					break;
+					
+				   case 10: // 모터 드라이버로 부터 Read data 수신
+					Slave_BackupTxBuffer[Rx2_index++] = rx1_data;
+					if(Rx2_next_data_no <= 1)
+					{
+					  Rx2_step = 6; // CRC16_Low 수신
+					}
+					else
+					{
+					  Rx2_next_data_no--;
+					}
+					break;
+			 }
 		}
 		else if((USART1->CR1 & USART_CR1_TCIE) && (USART1-> ISR & USART_CR1_TCIE))	//송신버퍼가 채워졌을 때
 		{
-			static uint8_t Tx1_cnt=0;
 			Tx1_cnt++;
 			
 			if(Tx1_send_number)
 			{
 				Tx1_send_number--;  
-				USART1->TDR = Master_BackupRxBuffer[Tx1_index++];
+				USART1->TDR = Slave_BackupRxBuffer[Tx1_index++];
 			}
 			else	//모든 Data 전송
 			{
@@ -460,24 +538,27 @@ void USART1_IRQHandler(void)
 				USART1->CR1 &= ~USART_CR1_TCIE;				// USART1's TXE Interrupt Disable
 			}
 			return;
-		  }
+		}
+		else
+		{
+			Error_cnt++;
+		}
 	}
-
   /* USER CODE END USART2_IRQn 0 */
-  //HAL_UART_IRQHandler(&huart1);
+  //  HAL_UART_IRQHandler(&huart1); // HAL 핸들러를 안쓰기 위해서 위와 같이 한거임 주석처리 해야해 안하면 통신 오류 생김!!
   /* USER CODE BEGIN USART2_IRQn 1 */
 
   /* USER CODE END USART2_IRQn 1 */
 }
 
-void LoRa_Tx(uint8_t lora_tx_num)	//USART1
+void Slave_LoRa_Tx(uint8_t lora_tx_num)	//USART1
 {
 	/*Send the character*/
-	USART1->TDR = Master_BackupRxBuffer[0];
+	USART1->TDR = Slave_BackupRxBuffer[0];
 	Tx1_index = 1;
 	Tx1_send_number = lora_tx_num-1;
-	USART1->CR1 &= ~USART_CR1_RXNEIE_RXFNEIE; 	//USART1's RXE Interrupt Disable	
-	USART1->CR1 |= USART_CR1_TCIE; 		//USART1's TXE Interrupt Enable		
+	USART1->CR1 &= ~USART_CR1_RXNEIE_RXFNEIE; 	//USART2's RXE Interrupt Disable	
+	USART1->CR1 |= USART_CR1_TCIE; 		//USART2's TXE Interrupt Enable		
 }
 
 /**
@@ -508,110 +589,51 @@ void SUBGHZ_Radio_IRQHandler(void)
   /* USER CODE END SUBGHZ_Radio_IRQn 1 */
 }
 
-void LoRa_Data_exe(void)
-{
-  
-	byte i, no;
-	word wtemp;
-
-	byte *bptr;
-	
-	if(Rcv2_ok == 0x44) // Motor-Driver로 부터 데이터를 정상적으로 읽어 왔을때( 읽기 요청 )
-	{
-		Rcv2_ok = 0;
-		if(BufferRx[1] == 0x04)
-		{
-			wtemp = (Master_BackupTxBuffer[2] << 8) + Master_BackupTxBuffer[3]; // 읽기 시작 주소( Data Address )
-			//bptr = (byte *)(0x20000000 + wtemp); // #define 0x20000000
-			no = BufferRx[2]; // Master에서 읽기 요청한 데이터 수
-			for(i = 0; i < no; i++)
-			{
-				//*bptr = BufferRx[3+i];	// Motor-Driver에서 받아온 값을 _LoRa_Data 구조체에 대입
-				//bptr++; // Motor-Driver에서 받아온 값을 _LoRa_Data 구조체에 대입
-				send_data_cnt++;
-			}
-			
-			for(int RxBuf_reset = 0; RxBuf_reset < sizeof(BufferRx); RxBuf_reset++) // BufferRx 초기화 
-			{
-		      BufferRx[RxBuf_reset] = '\0';
-			}
-			
-			LoRa_Tx(send_data_cnt+5);
-			
-			GREEN_LED_OFF; /*LED_Green_OFF */
-			
-			//현재 수신 감도( 통신 테스트용 )
-			/*char rssi_text[] = "\r\n● Reception sensitivity : "; 
-			
-			HAL_UART_Transmit(&huart1, (uint8_t *)rssi_text,strlen(rssi_text), 100);
-			
-			char rssi_data[] = "         "; 
-				
-			sprintf(rssi_data,"%ddB\r\n",RssiValue);
-			
-			HAL_UART_Transmit(&huart1, (uint8_t *)rssi_data,strlen(rssi_data), 100);*/
-			
-			send_data_cnt = 0;
-		}
-		
-		//Rx_Success_Flag = 1; // PC에 받아온 데이터를 출력
-	}
-	if(Rcv2_ok == 0x110) // Motor-Driver로 부터 데이터를 정상적으로 읽어 왔을때( 쓰기 요청 )
-	{
-	  Rcv2_ok = 0;
-	  for(int RxBuf_reset = 0; RxBuf_reset < sizeof(BufferRx); RxBuf_reset++) // BufferRx 초기화 
-	  {
-	    BufferRx[RxBuf_reset] = '\0';
-	  }
-	  
-	  LoRa_Tx(8);
-	  
-	  GREEN_LED_OFF; /*LED_Green_OFF */
-	}
-	if(Rcv2_ok == 0x990) // Motor-Driver로 부터 데이터를 정상적으로 읽어 왔을때( 쓰기 요청 )
-	{
-	  Rcv2_ok = 0;
-	  for(int RxBuf_reset = 0; RxBuf_reset < sizeof(BufferRx); RxBuf_reset++) // BufferRx 초기화 
-	  {
-	    BufferRx[RxBuf_reset] = '\0';
-	  }
-	  
-	  LoRa_Tx(5);
-	  
-	  GREEN_LED_OFF; /*LED_Green_OFF */
-	}
-}
-
 /**
   * @brief This function handles TIM2 Global Interrupt.
   */
-void TIM2_IRQHandler(void)
+
+void TIM2_IRQHandler(void) // 1ms cnt
 {
   /* USER CODE BEGIN TIM2_IRQn 0 */
 	
 	//1ms timer
 	static unsigned int time2_cnt = 0;
 	static unsigned char sec = 0, min = 0;
-	static unsigned short num = 0;
 	
-	if(Rcv2_ok)	// Motor-Driver에서 받은 데이터를 _LoRa_Data 구조체에 대입
+	if(md_rx_time)
+	{
+	  rx_time_cnt++;
+	}
+	  
+	
+	if(Rcv2_ok)	//UART2 data received?
     {
-	  Rcv2_ok = (Rcv2_ok<<4) | Rcv2_ok;	//5:55, 4:44, E:EE
+	  	byte i, no;
+		word wtemp;
+
+		byte *bptr;
+		byte step;
+        if(RS232_dead_time)
+            RS232_dead_time--;	//1msec 마다 1씩 감소
+        else
+        {
+            Rcv2_ok = (Rcv2_ok<<4) | Rcv2_ok;	//5:55, 4:44, E:EE
+        }
     }
 	
-	/*if(Tx_end_recieve_EN)
+	/*if(Tx_send_EN)
 	{
-		if(Tx_end_recieve_flag)
-		{
-		  Tx_end_recieve_flag--;
-		}
-		else
-		{
-		  isMaster = true; // LoRa_Master를 다시 TX모드로 변환(끝) 
-		  HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, 0);
-		  Tx_end_recieve_EN = 0;
-		  send_data_cnt = 0;
-		}
+	  if(Tx_send_flag)
+	  {
+		Tx_send_flag--;
+	  }
+	  else
+	  {
+		HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, 0); //LED_GREEN_OFF
+		isMaster = true; // LoRa_Slave를 TX모드로 변환
+		Tx_send_EN = 0;
+	  }
 	}*/
 	
 	Timer_cnt--;
@@ -620,71 +642,47 @@ void TIM2_IRQHandler(void)
 	  Timer_cnt = 0;
 	}
 	
+	if(++time2_cnt >= 1000)
+	{
+	  time2_cnt = 0;
+	  
+	  Send_EN = 1;
+	  
+	  Tx_EEROR_CNT--;
+	  if(Tx_EEROR_CNT <= 0)
+	  {
+		Tx_EEROR_CNT=0;
+	  }
+		//MD_tx_EN = 1;
+		if(++sec >= 60)
+		{
+			sec = 0;
+			min++;
+		}
+		
+		//HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin); /* LED_RED */
+	  RED_LED_TOGGLE; /* LED_RED Toggle */
+	}
+	
 	if(++T100ms_cnt >= 100)
 	{
 	  T100ms_cnt = 0;
 	  Timer_cnt = 100;
 	}
 	
-	
-	
-	if(++time2_cnt >= 1000)
+	/*
+	static unsigned int rf_start_cnt = 0;
+	if(++rf_start_cnt >= 5000 && RF_start_flag)	
 	{
-	  time2_cnt = 0;
-	  
-	  if(num_cnt == 1)
-	  {
-	    num++;
-		/*master_start++;
-		if(master_start == 1)// 마스터 송수신 상태
-		{
-		  HAL_UART_Transmit(&huart1, (uint8_t *)ok_Buffer,2, 100);
-		}*/
-		if(master_start >= 2)
-		{
-		  master_start = 2;
-		}
-	  }
-	  
-	  /*if(ENQ != 0)
-	  {
-		if(BufferRx[0] == ENQ)
-		{
-		   Rx_Success_Flag = 1;
-		}
-	  }
-	  
-	  if(isMaster == false)
-	  {
-		error_flag++;
-		if(error_flag == 5) // 5초 동안 데이터를 받아오지 못한다면 error 메세지 출력 및 LoRa_Master를 Tx로 변환 
-		{
-		  error_flag = 0;
-		  error_msg = 1;
-		  
-		  //isMaster = true; // 주석 해제 해야해!!
-		}
-	  }*/
-		//1sec task
-		//sprintf(Kang_TX_buf, "%d", num);
+		RF_start_flag = 0;
+		rf_start_cnt = 0;
 		
-		//tx_EN = 1;
-
-		/*for(unsigned char i = 0; Kang_TX_buf[i]!=0x00; i++)
-		{
-			Log_tx_buf[i] = Kang_TX_buf[i];
-			Log_tx_buf[i+1] = '\n';
-			Log_tx_buf[i+2] = '\r';
-		}*/
-		if(++sec >= 60)
-		{
-			sec = 0;
-			min++;
-		}
-		//HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin); /* LED_RED */
-	   RED_LED_TOGGLE; /* LED_RED Toggle */
-	}
-
+		isMaster = true;	//송신모드
+		Station_No = 0x01;	//로라 모듈 전원이 들어가고, 5초 뒤에 통신시작(송신)
+		Tx_EN = 1;
+	}*/
+	
+	
   /* USER CODE END TIM2_IRQn 0 */
   HAL_TIM_IRQHandler(&htim2);
   /* USER CODE BEGIN TIM2_IRQn 1 */
